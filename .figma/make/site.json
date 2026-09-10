@@ -1,0 +1,10 @@
+{
+  "description": "Optimizes exam prep by generating personalized study paths, analyzing test data, managing tasks, and offering AI-powered problem-solving for efficient learning.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
