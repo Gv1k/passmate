@@ -13,10 +13,16 @@ function useReveal() {
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const obs = new IntersectionObserver(
-      ([entry]) => setVisible(entry.isIntersecting),
-      { threshold: 0.12 },
-    )
+    if (!window.IntersectionObserver || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setVisible(true)
+      return
+    }
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setVisible(true)
+        obs.disconnect()
+      }
+    }, { root: document.getElementById("page-scroll"), rootMargin: "80px", threshold: 0 })
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
@@ -28,6 +34,9 @@ const BLUE = "#326AFD"
 const LIME = "#92EC47"
 const NAVY = "#0C1419"
 const WHITE = "#FFFFFF"
+const SURFACE = "var(--surface)"
+const SURFACE_RAISED = "var(--surface-raised)"
+const BORDER = "1px solid var(--border-default)"
 
 // ─── Types ───────────────────────────────────────────────────
 interface CheckItem {
@@ -514,19 +523,43 @@ function OrbitalSubjects({
     )
   }
 
-  // Idle drift
+  // Pause offscreen/background motion, respect reduced motion, and cap idle
+  // React updates at 30fps. Delta time keeps orbital speed refresh-rate independent.
   useEffect(() => {
-    if (view !== "orbit") return
+    if (view !== "orbit" || !containerRef.current) return
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let raf = 0
-    const loop = () => {
-      anglesRef.current = anglesRef.current.map((a, i) =>
-        draggingRef.current === i ? a : a + (velRef.current[i] || 0),
-      )
-      setTick((t) => (t + 1) % 100000)
+    let last = 0
+    let inView = false
+    const loop = (now: number) => {
+      if (now - last >= 1000 / 30) {
+        const delta = last ? Math.min(now - last, 64) / (1000 / 60) : 1
+        last = now
+        anglesRef.current = anglesRef.current.map((angle, i) =>
+          draggingRef.current === i ? angle : angle + (velRef.current[i] || 0) * delta,
+        )
+        setTick((tick) => (tick + 1) % 100000)
+      }
       raf = requestAnimationFrame(loop)
     }
-    raf = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(raf)
+    const sync = () => {
+      cancelAnimationFrame(raf)
+      last = 0
+      if (inView && !document.hidden && !reducedMotion.matches) raf = requestAnimationFrame(loop)
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting
+      sync()
+    })
+    observer.observe(containerRef.current)
+    document.addEventListener("visibilitychange", sync)
+    reducedMotion.addEventListener("change", sync)
+    return () => {
+      cancelAnimationFrame(raf)
+      observer.disconnect()
+      document.removeEventListener("visibilitychange", sync)
+      reducedMotion.removeEventListener("change", sync)
+    }
   }, [view])
 
   // Drag along orbit ring
@@ -753,7 +786,7 @@ function OrbitalSubjects({
                     padding: `${6 * labelScale}px ${9 * labelScale}px`,
                     whiteSpace: "nowrap",
                     background: `${NAVY}f2`,
-                    border: "1px solid rgba(255,255,255,0.12)",
+                    border: BORDER,
                     borderRadius: 9,
                     boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
                     pointerEvents: "none",
@@ -901,7 +934,7 @@ function OrbitalSubjects({
               background: showArchived
                 ? "rgba(255,255,255,0.08)"
                 : "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.1)",
+              border: BORDER,
               borderRadius: 100,
               cursor: "pointer",
             }}
@@ -934,8 +967,8 @@ function OrbitalSubjects({
                 right: 0,
                 minWidth: 180,
                 padding: "10px 12px",
-                background: "#10191f",
-                border: "1px solid rgba(255,255,255,0.1)",
+                background: SURFACE,
+                border: BORDER,
                 borderRadius: 10,
                 boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
               }}
@@ -966,8 +999,8 @@ function OrbitalSubjects({
                         alignItems: "center",
                         gap: 6,
                         padding: "5px 8px",
-                        background: "rgba(255,255,255,0.03)",
-                        border: "1px solid rgba(255,255,255,0.08)",
+                        background: SURFACE,
+                        border: BORDER,
                         borderRadius: 8,
                         cursor: "pointer",
                         whiteSpace: "nowrap",
@@ -1082,7 +1115,7 @@ function Nav({
     const el = document.getElementById("page-scroll")
     if (!el) return
     const onScroll = () => setScrolled(el.scrollTop > 24)
-    el.addEventListener("scroll", onScroll)
+    el.addEventListener("scroll", onScroll, { passive: true })
     return () => el.removeEventListener("scroll", onScroll)
   }, [])
 
@@ -1146,8 +1179,8 @@ function Nav({
             gap: 8,
             padding: "7px 12px 7px 14px",
             borderRadius: 100,
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.12)",
+            background: SURFACE_RAISED,
+            border: BORDER,
           }}
         >
           <div
@@ -1217,8 +1250,8 @@ function Nav({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.12)",
+            background: SURFACE_RAISED,
+            border: BORDER,
             borderRadius: 9,
             cursor: "pointer",
             transition: "all 0.15s",
@@ -1315,7 +1348,7 @@ function ChecklistPanel({
             padding: "16px 10px",
             background: `${NAVY}f0`,
             backdropFilter: "blur(20px)",
-            border: "1px solid rgba(255,255,255,0.1)",
+            border: BORDER,
             borderRight: "none",
             borderRadius: "12px 0 0 12px",
             cursor: "pointer",
@@ -1377,7 +1410,7 @@ function ChecklistPanel({
             width: 340,
             background: `${NAVY}f5`,
             backdropFilter: "blur(24px)",
-            border: "1px solid rgba(255,255,255,0.08)",
+            border: BORDER,
             borderRight: "none",
             borderRadius: "16px 0 0 16px",
             boxShadow: "-8px 0 48px rgba(0,0,0,0.5)",
@@ -1435,8 +1468,8 @@ function ChecklistPanel({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: SURFACE_RAISED,
+                  border: BORDER,
                   borderRadius: 6,
                   cursor: "pointer",
                   color: "rgba(255,255,255,0.5)",
@@ -1456,7 +1489,7 @@ function ChecklistPanel({
             <div
               style={{
                 display: "flex",
-                background: "rgba(255,255,255,0.04)",
+                background: SURFACE,
                 borderRadius: 8,
                 padding: 3,
               }}
@@ -1528,8 +1561,8 @@ function ChecklistPanel({
                     flex: 1,
                     minHeight: 220,
                     resize: "none",
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: SURFACE,
+                    border: BORDER,
                     borderRadius: 10,
                     padding: "12px 14px",
                     color: "rgba(255,255,255,0.85)",
@@ -1600,7 +1633,7 @@ function ChecklistPanel({
                       alignItems: "flex-start",
                       gap: 10,
                       padding: "10px 12px",
-                      background: "rgba(255,255,255,0.03)",
+                      background: SURFACE,
                       border: `1px solid ${
                         item.done ? `${LIME}25` : "rgba(255,255,255,0.06)"
                       }`,
@@ -1661,7 +1694,7 @@ function ChecklistPanel({
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        background: "rgba(255,255,255,0.04)",
+                        background: SURFACE,
                         border: "1px solid rgba(255,255,255,0.06)",
                         borderRadius: 4,
                         cursor: "pointer",
@@ -1706,8 +1739,8 @@ function ChecklistPanel({
                   style={{
                     flex: 1,
                     padding: "8px 12px",
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: SURFACE,
+                    border: BORDER,
                     borderRadius: 7,
                     fontSize: 12,
                     fontFamily: "var(--font-body)",
@@ -1833,7 +1866,7 @@ function Hero({
               display: "flex",
               alignItems: "center",
               gap: 10,
-              background: "rgba(255,255,255,0.04)",
+              background: SURFACE,
               border: `1px solid ${
                 focused ? `${BLUE}55` : "rgba(255,255,255,0.1)"
               }`,
@@ -1978,8 +2011,8 @@ function ExamModal({
   const canSave = rows.some((r) => r.name.trim() && r.examDate)
   const inputStyle = {
     padding: "10px 12px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.1)",
+    background: SURFACE,
+    border: BORDER,
     borderRadius: 9,
     color: WHITE,
     fontSize: 13,
@@ -2011,7 +2044,7 @@ function ExamModal({
           display: "flex",
           flexDirection: "column",
           background: `${NAVY}`,
-          border: "1px solid rgba(255,255,255,0.1)",
+          border: BORDER,
           borderRadius: 18,
           boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
           overflow: "hidden",
@@ -2060,8 +2093,8 @@ function ExamModal({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background: SURFACE_RAISED,
+              border: BORDER,
               borderRadius: 7,
               cursor: "pointer",
               color: "rgba(255,255,255,0.6)",
@@ -2150,8 +2183,8 @@ function ExamModal({
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: SURFACE,
+                    border: BORDER,
                     borderRadius: 8,
                     cursor: rows.length === 1 ? "default" : "pointer",
                     color: "rgba(255,255,255,0.35)",
@@ -2392,9 +2425,9 @@ function HowItWorks({
       ref={ref}
       style={{
         padding: "100px 80px",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        opacity: visible ? 1 : 0.75,
+        transform: visible ? "none" : "translateY(12px)",
+        transition: "opacity 0.3s ease, transform 0.3s ease",
       }}
     >
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -2446,7 +2479,7 @@ function HowItWorks({
           How you can use PassMate
         </h2>
 
-        {/* Category tabs — left-aligned inside a white pill frame */}
+        {/* Category tabs — shared dark surface */}
         <div
           style={{
             display: "flex",
@@ -2460,7 +2493,7 @@ function HowItWorks({
               flexWrap: "wrap",
               gap: 3,
               padding: 4,
-              background: WHITE,
+              background: SURFACE_RAISED,
               border: "1px solid rgba(255,255,255,0.14)",
               borderRadius: 100,
               boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
@@ -2479,8 +2512,8 @@ function HowItWorks({
                     padding: "6px 12px",
                     borderRadius: 100,
                     border: "none",
-                    background: on ? NAVY : "transparent",
-                    color: on ? WHITE : "rgba(12,20,25,0.5)",
+                    background: on ? BLUE : "transparent",
+                    color: on ? WHITE : "rgba(255,255,255,0.65)",
                     fontFamily: "var(--font-body)",
                     fontSize: 12,
                     fontWeight: on ? 600 : 500,
@@ -2488,10 +2521,10 @@ function HowItWorks({
                     transition: "all 0.15s",
                   }}
                   onMouseEnter={(e) => {
-                    if (!on) e.currentTarget.style.color = "rgba(12,20,25,0.85)"
+                    if (!on) e.currentTarget.style.color = WHITE
                   }}
                   onMouseLeave={(e) => {
-                    if (!on) e.currentTarget.style.color = "rgba(12,20,25,0.5)"
+                    if (!on) e.currentTarget.style.color = "rgba(255,255,255,0.65)"
                   }}
                 >
                   {t.icon}
@@ -2517,8 +2550,8 @@ function HowItWorks({
             borderRadius: 24,
             padding: "48px 48px 0",
             minHeight: 340,
-            background: `linear-gradient(150deg, ${BLUE} 0%, #204bc4 55%, ${NAVY} 130%)`,
-            border: "1px solid rgba(255,255,255,0.1)",
+            background: SURFACE,
+            border: BORDER,
             animation: "cardSlideUp 1.1s cubic-bezier(0.22, 1, 0.36, 1)",
           }}
         >
@@ -2531,7 +2564,7 @@ function HowItWorks({
               width: 320,
               height: 320,
               borderRadius: "50%",
-              border: "1px solid rgba(255,255,255,0.12)",
+              border: BORDER,
               pointerEvents: "none",
             }}
           />
@@ -2548,7 +2581,7 @@ function HowItWorks({
             }}
           />
 
-          {/* Inner white artifact card + floating prompt box */}
+          {/* Artifact card + floating prompt box */}
           <div
             style={{
               position: "relative",
@@ -2564,8 +2597,8 @@ function HowItWorks({
                 flexShrink: 0,
                 width: 260,
                 marginBottom: -1,
-                background: "#0A0F14",
-                border: "1px solid rgba(255,255,255,0.1)",
+                background: SURFACE,
+                border: BORDER,
                 borderRadius: "14px 14px 0 0",
                 padding: "18px 20px 24px",
                 boxShadow: "0 -8px 30px rgba(0,0,0,0.35)",
@@ -2624,7 +2657,7 @@ function HowItWorks({
                   justifyContent: "center",
                   gap: 8,
                   background: LIME,
-                  color: NAVY,
+                  color: WHITE,
                   fontFamily: "var(--font-sans)",
                   fontSize: 13,
                   fontWeight: 700,
@@ -2659,13 +2692,13 @@ function HowItWorks({
               </button>
             </div>
 
-            {/* Artifact card (light, the produced result) */}
+            {/* Artifact card (raised surface, the produced result) */}
             <div
               style={{
                 flex: 1,
                 minWidth: 280,
                 marginBottom: 0,
-                background: WHITE,
+                background: SURFACE_RAISED,
                 borderRadius: "16px 16px 0 0",
                 padding: "30px 32px 40px",
                 minHeight: 200,
@@ -2689,7 +2722,7 @@ function HowItWorks({
                   fontSize: 30,
                   fontWeight: 700,
                   letterSpacing: "-0.02em",
-                  color: NAVY,
+                  color: WHITE,
                   margin: 0,
                   lineHeight: 1.2,
                 }}
@@ -2711,7 +2744,7 @@ function HowItWorks({
                       height: 7,
                       width: `${w}%`,
                       borderRadius: 4,
-                      background: "rgba(12,20,25,0.08)",
+                      background: "rgba(255,255,255,0.08)",
                     }}
                   />
                 ))}
@@ -2800,9 +2833,9 @@ function PastPapersSection({
         background: "rgba(255,255,255,0.015)",
         borderTop: "1px solid rgba(255,255,255,0.05)",
         borderBottom: "1px solid rgba(255,255,255,0.05)",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        opacity: visible ? 1 : 0.75,
+        transform: visible ? "none" : "translateY(12px)",
+        transition: "opacity 0.3s ease, transform 0.3s ease",
       }}
     >
       <div
@@ -2877,8 +2910,8 @@ function PastPapersSection({
         {/* Right: priority board mock */}
         <div
           style={{
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.08)",
+            background: SURFACE,
+            border: BORDER,
             borderRadius: 16,
             overflow: "hidden",
           }}
@@ -3103,7 +3136,7 @@ function PastPapersSection({
                   <div
                     style={{
                       height: 2,
-                      background: "rgba(255,255,255,0.06)",
+                      background: SURFACE_RAISED,
                       borderRadius: 1,
                       width: "80%",
                     }}
@@ -3202,7 +3235,7 @@ function AssistantPanel({
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })
   }, [messages, thinking])
 
   const pickImage = (e: ChangeEvent<HTMLInputElement>) => {
@@ -3223,15 +3256,14 @@ function AssistantPanel({
 
   return (
     <div
+      data-assistant-panel={variant}
       style={{
         display: "flex",
         flexDirection: "column",
         height: isPage ? "72vh" : "100%",
         padding: isPage ? 28 : 24,
-        background: isPage
-          ? "rgba(255,255,255,0.03)"
-          : `linear-gradient(150deg, #3b74ff 0%, ${BLUE} 55%, #204bc4 100%)`,
-        border: isPage ? "1px solid rgba(255,255,255,0.08)" : "none",
+        background: SURFACE,
+        border: BORDER,
         borderRadius: 16,
       }}
     >
@@ -3273,8 +3305,8 @@ function AssistantPanel({
               alignItems: "center",
               gap: 6,
               padding: "6px 12px",
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid rgba(255,255,255,0.1)",
+              background: SURFACE_RAISED,
+              border: BORDER,
               borderRadius: 8,
               color: "rgba(255,255,255,0.6)",
               fontSize: 12,
@@ -3295,23 +3327,19 @@ function AssistantPanel({
               width: 28,
               height: 28,
               borderRadius: 8,
-              background: isPage ? "rgba(255,255,255,0.04)" : "#ffffff",
-              border: isPage ? "1px solid rgba(255,255,255,0.1)" : "none",
-              color: isPage ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.5)",
+              background: SURFACE_RAISED,
+              border: BORDER,
+              color: "rgba(255,255,255,0.65)",
               cursor: "pointer",
               transition: "all 0.15s",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = isPage ? WHITE : BLUE
+              e.currentTarget.style.color = WHITE
               e.currentTarget.style.borderColor = `${BLUE}60`
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = isPage
-                ? "rgba(255,255,255,0.55)"
-                : "rgba(0,0,0,0.5)"
-              e.currentTarget.style.borderColor = isPage
-                ? "rgba(255,255,255,0.1)"
-                : "transparent"
+              e.currentTarget.style.color = "rgba(255,255,255,0.65)"
+              e.currentTarget.style.borderColor = "var(--border-default)"
             }}
           >
             <svg
@@ -3392,7 +3420,7 @@ function AssistantPanel({
                 style={{
                   maxWidth: "82%",
                   padding: m.image && !m.text ? 4 : "10px 14px",
-                  background: "#ffffff",
+                  background: mine ? `${BLUE}25` : SURFACE_RAISED,
                   border: "none",
                   borderRadius: 12,
                   borderBottomRightRadius: mine ? 4 : 12,
@@ -3418,7 +3446,7 @@ function AssistantPanel({
                       fontFamily: "var(--font-body)",
                       fontSize: 13,
                       lineHeight: 1.6,
-                      color: "rgba(0,0,0,0.8)",
+                      color: WHITE,
                       whiteSpace: "pre-wrap",
                     }}
                   >
@@ -3435,8 +3463,8 @@ function AssistantPanel({
             <div
               style={{
                 padding: "10px 14px",
-                background: isPage ? "rgba(255,255,255,0.04)" : "#ffffff",
-                border: isPage ? "1px solid rgba(255,255,255,0.08)" : "none",
+                background: SURFACE_RAISED,
+                border: BORDER,
                 borderRadius: 12,
                 borderBottomLeftRadius: 4,
                 display: "flex",
@@ -3451,9 +3479,7 @@ function AssistantPanel({
                     width: 5,
                     height: 5,
                     borderRadius: 100,
-                    background: isPage
-                      ? "rgba(255,255,255,0.5)"
-                      : "rgba(0,0,0,0.3)",
+                    background: "rgba(255,255,255,0.5)",
                     animation: `dotPulse 1.2s ${d * 0.15}s ease-in-out infinite`,
                   }}
                 />
@@ -3479,7 +3505,7 @@ function AssistantPanel({
             style={{
               height: 56,
               borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.12)",
+              border: BORDER,
             }}
           />
           <button
@@ -3516,8 +3542,8 @@ function AssistantPanel({
           gap: 8,
           marginTop: 12,
           padding: 8,
-          background: isPage ? "rgba(255,255,255,0.03)" : "#ffffff",
-          border: isPage ? "1px solid rgba(255,255,255,0.08)" : "none",
+          background: SURFACE_RAISED,
+          border: BORDER,
           borderRadius: 12,
         }}
       >
@@ -3539,19 +3565,17 @@ function AssistantPanel({
             width: 34,
             height: 34,
             borderRadius: 8,
-            background: isPage ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.06)",
-            border: isPage ? "1px solid rgba(255,255,255,0.1)" : "none",
-            color: isPage ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.4)",
+            background: SURFACE_RAISED,
+            border: BORDER,
+            color: "rgba(255,255,255,0.65)",
             cursor: "pointer",
             transition: "all 0.15s",
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = isPage ? LIME : BLUE
+            e.currentTarget.style.color = LIME
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.color = isPage
-              ? "rgba(255,255,255,0.55)"
-              : "rgba(0,0,0,0.4)"
+            e.currentTarget.style.color = "rgba(255,255,255,0.65)"
           }}
         >
           <svg
@@ -3589,7 +3613,7 @@ function AssistantPanel({
             background: "transparent",
             border: "none",
             outline: "none",
-            color: isPage ? WHITE : "rgba(0,0,0,0.8)",
+            color: WHITE,
             fontSize: 13,
             lineHeight: 1.5,
             fontFamily: "var(--font-body)",
@@ -3609,9 +3633,7 @@ function AssistantPanel({
             background:
               text.trim() || image
                 ? BLUE
-                : isPage
-                  ? "rgba(255,255,255,0.06)"
-                  : "rgba(0,0,0,0.08)",
+                : SURFACE_RAISED,
             border: "none",
             color: WHITE,
             cursor: text.trim() || image ? "pointer" : "default",
@@ -3678,9 +3700,9 @@ function MockExamSection({
       ref={ref}
       style={{
         padding: "100px 80px",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        opacity: visible ? 1 : 0.75,
+        transform: visible ? "none" : "translateY(12px)",
+        transition: "opacity 0.3s ease, transform 0.3s ease",
       }}
     >
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
@@ -3725,7 +3747,7 @@ function MockExamSection({
           <div
             style={{
               padding: 32,
-              background: `linear-gradient(150deg, #3b74ff 0%, ${BLUE} 55%, #204bc4 100%)`,
+              background: SURFACE,
               borderRadius: 16,
               display: "flex",
               flexDirection: "column",
@@ -3869,7 +3891,7 @@ function MockExamSection({
                   style={{
                     padding: "12px 14px",
                     background: "rgba(255,255,255,0.08)",
-                    border: "1px solid rgba(255,255,255,0.12)",
+                    border: BORDER,
                     borderRadius: 10,
                   }}
                 >
@@ -4128,7 +4150,7 @@ function PromptCenter({
             marginBottom: 24,
             padding: "6px 12px",
             background: "transparent",
-            border: "1px solid rgba(255,255,255,0.12)",
+            border: BORDER,
             borderRadius: 8,
             color: "rgba(255,255,255,0.6)",
             fontSize: 12,
@@ -4185,8 +4207,8 @@ function PromptCenter({
           <div
             style={{
               padding: 28,
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background: SURFACE,
+              border: BORDER,
               borderRadius: 16,
             }}
           >
@@ -4199,8 +4221,8 @@ function PromptCenter({
                 width: "100%",
                 padding: "11px 14px",
                 marginBottom: 24,
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.1)",
+                background: SURFACE,
+                border: BORDER,
                 borderRadius: 10,
                 color: WHITE,
                 fontSize: 13,
@@ -4226,8 +4248,8 @@ function PromptCenter({
             <div
               style={{
                 display: "flex",
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.08)",
+                background: SURFACE,
+                border: BORDER,
                 borderRadius: 10,
                 padding: 4,
                 marginBottom: 24,
@@ -4269,8 +4291,8 @@ function PromptCenter({
                     width: "100%",
                     padding: "11px 14px",
                     marginBottom: 12,
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.1)",
+                    background: SURFACE,
+                    border: BORDER,
                     borderRadius: 10,
                     color: WHITE,
                     fontSize: 13,
@@ -4300,8 +4322,8 @@ function PromptCenter({
                 width: "100%",
                 padding: "11px 14px",
                 marginBottom: 24,
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.1)",
+                background: SURFACE,
+                border: BORDER,
                 borderRadius: 10,
                 color: WHITE,
                 fontSize: 13,
@@ -4346,8 +4368,8 @@ function PromptCenter({
           <div
             style={{
               padding: 28,
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background: SURFACE,
+              border: BORDER,
               borderRadius: 16,
               display: "flex",
               flexDirection: "column",
@@ -4444,7 +4466,7 @@ function SchedulePage({
             marginBottom: 24,
             padding: "6px 12px",
             background: "transparent",
-            border: "1px solid rgba(255,255,255,0.12)",
+            border: BORDER,
             borderRadius: 8,
             color: "rgba(255,255,255,0.6)",
             fontSize: 12,
@@ -4530,8 +4552,8 @@ function SchedulePage({
                   gap: 16,
                   alignItems: "center",
                   padding: "18px 20px",
-                  background: "rgba(255,255,255,0.03)",
-                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: SURFACE,
+                  border: BORDER,
                   borderRadius: 14,
                   transition: "border-color 0.15s",
                 }}
@@ -4877,8 +4899,8 @@ function ExamSlotCard({
   return (
     <div
       style={{
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.08)",
+        background: SURFACE,
+        border: BORDER,
         borderRadius: 16,
         padding: 20,
         display: "flex",
@@ -4970,7 +4992,7 @@ function ExamSlotCard({
                   height: 68,
                   borderRadius: 8,
                   overflow: "hidden",
-                  border: "1px solid rgba(255,255,255,0.1)",
+                  border: BORDER,
                 }}
               >
                 <img
@@ -5083,7 +5105,7 @@ function ExamUploadPage({
             marginBottom: 24,
             padding: "6px 12px",
             background: "transparent",
-            border: "1px solid rgba(255,255,255,0.12)",
+            border: BORDER,
             borderRadius: 8,
             color: "rgba(255,255,255,0.6)",
             fontSize: 12,
@@ -5299,9 +5321,9 @@ function RevisionFlowSection({
         background: "rgba(255,255,255,0.015)",
         borderTop: "1px solid rgba(255,255,255,0.05)",
         borderBottom: "1px solid rgba(255,255,255,0.05)",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        opacity: visible ? 1 : 0.75,
+        transform: visible ? "none" : "translateY(12px)",
+        transition: "opacity 0.3s ease, transform 0.3s ease",
       }}
     >
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
@@ -5580,8 +5602,8 @@ function ExamBoard({
         key={p.id}
         onClick={() => !p.isDemo && setDetailId(p.id)}
         style={{
-          background: "rgba(255,255,255,0.03)",
-          border: "1px solid rgba(255,255,255,0.08)",
+          background: SURFACE,
+          border: BORDER,
           borderRadius: 16,
           padding: "16px 22px",
           display: "flex",
@@ -5730,7 +5752,7 @@ function ExamBoard({
                 width: 28,
                 height: 28,
                 borderRadius: 7,
-                border: "1px solid rgba(255,255,255,0.12)",
+                border: BORDER,
                 background: "transparent",
                 color: "rgba(255,255,255,0.5)",
                 cursor: "pointer",
@@ -5748,7 +5770,7 @@ function ExamBoard({
                 width: 28,
                 height: 28,
                 borderRadius: 7,
-                border: "1px solid rgba(255,255,255,0.12)",
+                border: BORDER,
                 background: "transparent",
                 color: "rgba(255,255,255,0.5)",
                 cursor: "pointer",
@@ -5822,7 +5844,7 @@ function ExamBoard({
               gap: 6,
               padding: "6px 12px",
               background: "transparent",
-              border: "1px solid rgba(255,255,255,0.12)",
+              border: BORDER,
               borderRadius: 8,
               color: "rgba(255,255,255,0.6)",
               fontSize: 12,
@@ -5901,8 +5923,8 @@ function ExamBoard({
             gap: 24,
             padding: "14px 20px",
             marginBottom: 28,
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.08)",
+            background: SURFACE,
+            border: BORDER,
             borderRadius: 12,
           }}
         >
@@ -5997,8 +6019,8 @@ function ModalShell({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: "#10191f",
-          border: "1px solid rgba(255,255,255,0.1)",
+          background: SURFACE,
+          border: BORDER,
           borderRadius: 18,
           padding: 32,
           maxWidth: 880,
@@ -6025,7 +6047,7 @@ function ModalShell({
               width: 28,
               height: 28,
               borderRadius: 7,
-              border: "1px solid rgba(255,255,255,0.12)",
+              border: BORDER,
               background: "transparent",
               color: "rgba(255,255,255,0.5)",
               cursor: "pointer",
@@ -6123,7 +6145,7 @@ function TopicDetailModal({ point, onClose }: { point: RankedPoint; onClose: () 
                 key={i}
                 style={{
                   padding: "12px 14px",
-                  background: "rgba(255,255,255,0.03)",
+                  background: SURFACE,
                   border: "1px solid rgba(255,255,255,0.06)",
                   borderRadius: 10,
                 }}
@@ -6280,8 +6302,8 @@ function TopicEditModal({
   const inputStyle = {
     width: "100%",
     padding: "9px 12px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: SURFACE,
+    border: BORDER,
     borderRadius: 8,
     color: WHITE,
     fontFamily: "var(--font-body)",
@@ -6384,67 +6406,6 @@ function TopicEditModal({
 // ─── Full-page starfield ──────────────────────────────────────
 // Fixed background layer of scattered stars + faint constellation figures,
 // spread across the whole page behind all content.
-function StarField() {
-  // scrollTop drives parallax drift; progress (0–1) drives which constellations
-  // are visible. Three star layers drift at different speeds for a depth feel.
-  const [scrollTop, setScrollTop] = useState(0)
-  const [progress, setProgress] = useState(0)
-
-  useEffect(() => {
-    const el = document.getElementById("page-scroll")
-    if (!el) return
-    const onScroll = () => {
-      const max = el.scrollHeight - el.clientHeight
-      setScrollTop(el.scrollTop)
-      setProgress(max > 0 ? el.scrollTop / max : 0)
-    }
-    onScroll()
-    el.addEventListener("scroll", onScroll, { passive: true })
-    return () => el.removeEventListener("scroll", onScroll)
-  }, [])
-
-  // Background=slow (feels far), midground, foreground=fast (feels near).
-  // The container is 300vh tall starting at top=-100vh so the middle third
-  // sits in the viewport at rest. Drifting by up to ~50vh is safe within
-  // the 100vh buffers above/below.
-  const LAYER_SPEED = [0.12, 0.32, 0.62]
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 0,
-        pointerEvents: "none",
-        overflow: "hidden",
-      }}
-    >
-      {/* Scroll-reactive nebula — its position, hue and intensity shift as you
-          scroll, so the whole backdrop visibly transforms top→bottom. */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: `
-          radial-gradient(ellipse 70% 55% at ${50 + progress * 26}% ${-12 + progress * 46}%,
-            hsla(${222 - progress * 40}, 80%, 60%, ${0.16 - progress * 0.05}) 0%, transparent 60%),
-          radial-gradient(ellipse 60% 50% at ${28 - progress * 20}% ${118 - progress * 42}%,
-            hsla(${90 + progress * 20}, 70%, 55%, ${0.04 + progress * 0.07}) 0%, transparent 55%)
-        `,
-          transition: "background 0.2s linear",
-        }}
-      />
-
-      <style>{`
-        @keyframes star-twinkle {
-          0%,100% { opacity: var(--base-o); }
-          50%      { opacity: calc(var(--base-o) * 0.35); }
-        }
-      `}</style>
-    </div>
-  )
-}
-
 // ─── Root ─────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState<"home" | "prompt" | "board" | "assistant" | "schedule" | "uploadExams">("home")
@@ -6455,7 +6416,7 @@ const goHome = () => setPage("home")
 
 const navigateTo = (target: 'assistant' | 'board' | 'prompt' | 'schedule' | 'uploadExams') => {
   setPage(target)
-  overlayRef.current?.scrollTo({ top: 0 })
+  overlayRef.current?.scrollTo({ top: 0, behavior: "instant" })
 }
 
 const [chat, setChat] = useState<ChatMsg[]>([])
@@ -6671,26 +6632,14 @@ const [thinking, setThinking] = useState(false)
   }
 return (
   <div id="page-scroll" className="scrollable" style={{
-    minHeight: "100vh",
-    background: NAVY,
-    overflowY: "auto",
+    height: "100dvh",
+    background: "var(--page-background)",
+    overflowY: page === "home" ? "auto" : "hidden",
     overflowX: "hidden",
     fontFamily: "var(--font-body)",
     color: WHITE,
     position: "relative",
   }}>
-    <StarField />
-
-    <div
-      style={{
-        position: "fixed",
-        top: 0, left: 0, right: 0, bottom: 0,
-        background: `radial-gradient(ellipse 80% 50% at 50% -10%, ${BLUE}18 0%, transparent 60%)`,
-        pointerEvents: "none",
-        zIndex: 0,
-      }}
-    />
-
     <div style={{ position: "relative", zIndex: 1 }}>
       <Nav
         subjects={subjects}
@@ -6771,12 +6720,12 @@ return (
 
     <div
       ref={overlayRef}
-      className="scrollable"
+      className="scrollable page-overlay"
       style={{
         position: "fixed",
         inset: 0,
         zIndex: 1000,
-        background: NAVY,
+        background: "var(--page-background)",
         overflowY: "auto",
         display: page === "home" ? "none" : "block",
       }}
