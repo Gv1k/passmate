@@ -13,12 +13,18 @@ function useReveal() {
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const obs = new IntersectionObserver(
-      ([entry]) => setVisible(entry.isIntersecting),
-      { threshold: 0.12 },
-    )
-    obs.observe(el)
-    return () => obs.disconnect()
+    if (!("IntersectionObserver" in window)) {
+      setVisible(true)
+      return
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setVisible(true)
+        observer.disconnect()
+      }
+    }, { root: document.getElementById("page-scroll"), rootMargin: "80px", threshold: 0 })
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [])
   return { ref, visible }
 }
@@ -484,7 +490,7 @@ function OrbitalSubjects({
   subjects: Subject[]
   onToggleArchive: (name: string) => void
 }) {
-  const [view, setView] = useState<"orbit" | "list">("orbit")
+  const [view, setView] = useState<"orbit" | "list">(() => window.matchMedia("(max-width: 480px)").matches ? "list" : "orbit")
   const [active, setActive] = useState<number | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -514,19 +520,43 @@ function OrbitalSubjects({
     )
   }
 
-  // Idle drift
+  // Pause offscreen/background motion, respect reduced motion, and cap idle
+  // React updates at 30fps. Delta time keeps orbital speed refresh-rate independent.
   useEffect(() => {
-    if (view !== "orbit") return
+    if (view !== "orbit" || !containerRef.current) return
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let raf = 0
-    const loop = () => {
-      anglesRef.current = anglesRef.current.map((a, i) =>
-        draggingRef.current === i ? a : a + (velRef.current[i] || 0),
-      )
-      setTick((t) => (t + 1) % 100000)
+    let last = 0
+    let inView = false
+    const loop = (now: number) => {
+      if (now - last >= 1000 / 30) {
+        const delta = last ? Math.min(now - last, 64) / (1000 / 60) : 1
+        last = now
+        anglesRef.current = anglesRef.current.map((angle, i) =>
+          draggingRef.current === i ? angle : angle + (velRef.current[i] || 0) * delta,
+        )
+        setTick((tick) => (tick + 1) % 100000)
+      }
       raf = requestAnimationFrame(loop)
     }
-    raf = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(raf)
+    const sync = () => {
+      cancelAnimationFrame(raf)
+      last = 0
+      if (inView && !document.hidden && !reducedMotion.matches) raf = requestAnimationFrame(loop)
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting
+      sync()
+    })
+    observer.observe(containerRef.current)
+    document.addEventListener("visibilitychange", sync)
+    reducedMotion.addEventListener("change", sync)
+    return () => {
+      cancelAnimationFrame(raf)
+      observer.disconnect()
+      document.removeEventListener("visibilitychange", sync)
+      reducedMotion.removeEventListener("change", sync)
+    }
   }, [view])
 
   // Drag along orbit ring
@@ -548,9 +578,11 @@ function OrbitalSubjects({
     }
     window.addEventListener("pointermove", onMove)
     window.addEventListener("pointerup", onUp)
+    window.addEventListener("pointercancel", onUp)
     return () => {
       window.removeEventListener("pointermove", onMove)
       window.removeEventListener("pointerup", onUp)
+      window.removeEventListener("pointercancel", onUp)
     }
   }, [])
 
@@ -579,12 +611,17 @@ function OrbitalSubjects({
 
   return (
     <div
+      className="orbit-shell"
+      data-view={view}
       style={{
         width: "100%",
         maxWidth: 440,
         position: "relative",
       }}
     >
+      <div className="orbit-view-switch" aria-label="Subject view">
+        {(["orbit", "list"] as const).map((mode) => <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode === "orbit" ? "Orbit" : "List"}</button>)}
+      </div>
       {view === "orbit" ? (
         <div
           ref={containerRef}
@@ -680,6 +717,7 @@ function OrbitalSubjects({
             const connAngle = Math.atan2(uy, ux)
             return (
               <div
+                className="orbit-planet"
                 key={s.name}
                 onPointerDown={(e) => {
                   draggingRef.current = i
@@ -798,7 +836,7 @@ function OrbitalSubjects({
           })}
         </div>
       ) : (
-        <div style={{ padding: "8px 0" }}>
+        <div className="orbit-list" style={{ padding: "8px 0" }}>
           {subjects.map((s, i) => {
             const daysLeft = daysUntil(s.examDate)
             const pct = s.total ? Math.round((s.completed / s.total) * 100) : 0
@@ -1072,10 +1110,12 @@ function Nav({
   subjects,
   active,
   onSelect,
+  onNavigate,
 }: {
   subjects: Subject[]
   active: string
   onSelect: (s: string) => void
+  onNavigate: (page: "board" | "assistant" | "schedule") => void
 }) {
   const [scrolled, setScrolled] = useState(false)
   useEffect(() => {
@@ -1088,6 +1128,8 @@ function Nav({
 
   return (
     <nav
+      className="main-nav"
+      aria-label="Main navigation"
       style={{
         position: "sticky",
         top: 0,
@@ -1135,6 +1177,11 @@ function Nav({
         </span>
       </div>
 
+      <div className="nav-links">
+        <button onClick={() => document.getElementById("revision-flow")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>Study flow</button>
+        <button onClick={() => onNavigate("board")}>Priority board</button>
+        <button onClick={() => onNavigate("assistant")}>AI solver <span aria-hidden="true">↗</span></button>
+      </div>
       {/* Right: subject switcher + settings */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {/* Subject switcher pill */}
@@ -1209,8 +1256,9 @@ function Nav({
 
         {/* Settings (placeholder) */}
         <button
-          aria-label="Settings"
-          title="Settings"
+          aria-label="My schedule"
+          title="My schedule"
+          onClick={() => onNavigate("schedule")}
           style={{
             width: 36,
             height: 36,
@@ -1293,6 +1341,7 @@ function ChecklistPanel({
 
   return (
     <div
+      className="checklist-dock"
       style={{
         position: "fixed",
         right: 0,
@@ -1307,6 +1356,7 @@ function ChecklistPanel({
       {!open && (
         <button
           onClick={() => setOpen(true)}
+          aria-label="Open checklist"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -1754,177 +1804,46 @@ function Hero({
   subjects,
   onSave,
   onToggleArchive,
+  onStart,
+  onOpenBoard,
 }: {
   subjects: Subject[]
   onSave: (s: SubjectSeed[]) => void
   onToggleArchive: (name: string) => void
+  onStart: () => void
+  onOpenBoard: () => void
 }) {
-  const [query, setQuery] = useState("")
   const [modalOpen, setModalOpen] = useState(false)
-  const [focused, setFocused] = useState(false)
+  const totalTasks = subjects.reduce((sum, subject) => sum + subject.total, 0)
+  const doneTasks = subjects.reduce((sum, subject) => sum + subject.completed, 0)
+  const progress = totalTasks ? Math.round(doneTasks / totalTasks * 100) : 0
 
   return (
-    <section
-      style={{
-        minHeight: "calc(100vh - 64px)",
-        display: "flex",
-        alignItems: "center",
-        padding: "80px 80px 60px",
-        position: "relative",
-        overflow: "hidden",
-      }}
-    >
-      {/* Background glow */}
-      <div
-        style={{
-          position: "absolute",
-          top: "-20%",
-          left: "30%",
-          width: 600,
-          height: 600,
-          background: `radial-gradient(circle, ${BLUE}30 0%, transparent 70%)`,
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          bottom: "-10%",
-          right: "20%",
-          width: 400,
-          height: 400,
-          background: `radial-gradient(circle, ${LIME}15 0%, transparent 70%)`,
-          pointerEvents: "none",
-        }}
-      />
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(320px, 400px) 1fr",
-          gap: 64,
-          alignItems: "center",
-          width: "100%",
-          maxWidth: 1280,
-        }}
-      >
-        {/* Left: Claude-style minimal composer */}
-        <div style={{ maxWidth: 360, marginTop: 96 }}>
-          {/* Small headline */}
-          <h1
-            style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: 23,
-              fontWeight: 600,
-              lineHeight: 1.35,
-              letterSpacing: "-0.02em",
-              color: WHITE,
-              margin: "0 0 20px",
-            }}
-          >
-            one focused sprint at a time
-            <br />
-            for PassMate.
-          </h1>
-
-          {/* Composer — single-row */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              background: "rgba(255,255,255,0.04)",
-              border: `1px solid ${
-                focused ? `${BLUE}55` : "rgba(255,255,255,0.1)"
-              }`,
-              borderRadius: 14,
-              padding: "8px 8px 8px 16px",
-              transition: "border-color 0.2s",
-            }}
-          >
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault()
-                  setModalOpen(true)
-                }
-              }}
-              placeholder="What do you want to do?"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                color: WHITE,
-                fontSize: 15,
-                lineHeight: 1.5,
-                fontFamily: "var(--font-body)",
-              }}
-            />
-            <button
-              onClick={() => setModalOpen(true)}
-              aria-label="Add my exams"
-              style={{
-                flexShrink: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                background: BLUE,
-                border: "none",
-                color: WHITE,
-                cursor: "pointer",
-                transition: "opacity 0.15s, transform 0.1s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.88")}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 19V5M5 12l7-7 7 7" />
-              </svg>
-            </button>
+    <section className="hero-section">
+      <div className="hero-grid">
+        <div className="hero-copy">
+          <div className="eyebrow"><span className="status-dot" /> YOUR PERSONAL STUDY SPACE</div>
+          <h1>A little more focus.<br /><span>A lot more ready.</span></h1>
+          <p>Turn past papers into a clear plan. Find what matters, build your confidence, and take it one topic at a time.</p>
+          <div className="hero-actions">
+            <button className="primary-action" onClick={onStart}>Analyze past papers <span aria-hidden="true">↗</span></button>
+            <button className="secondary-action" onClick={() => setModalOpen(true)}>Manage my exams</button>
+          </div>
+          <div className="hero-metrics" aria-label="Study overview">
+            <div><strong>{subjects.length.toString().padStart(2, "0")}</strong><span>Subjects in your orbit</span></div>
+            <div><strong>{doneTasks}<small> / {totalTasks}</small></strong><span>Tasks completed</span></div>
+            <div><strong>{progress}<small>%</small></strong><span>Overall progress</span></div>
           </div>
         </div>
-
-        {/* Right: illustration */}
-        <div
-          style={{
-            position: "relative",
-            height: 700,
-            marginTop: -40,
-            transform: "scale(1.32)",
-            transformOrigin: "center top",
-          }}
-        >
-          <HeroIllustration subjects={subjects} onToggleArchive={onToggleArchive} />
+        <div className="orbit-card">
+          <div className="orbit-card-heading"><div><span className="eyebrow">THE BIG PICTURE</span><h2>Your study orbit</h2></div><span className="live-badge"><i /> Your workspace</span></div>
+          <div className="orbit-visual"><HeroIllustration subjects={subjects} onToggleArchive={onToggleArchive} /></div>
+          <div className="orbit-card-footer"><span>Small steps. Steady progress.</span><button onClick={onOpenBoard}>View my board <span aria-hidden="true">→</span></button></div>
         </div>
       </div>
-
+      <div className="hero-bottom"><span><span className="status-dot" /> A clearer path from practice to progress</span><a href="#revision-flow">Your next step <span aria-hidden="true">↓</span></a></div>
       {modalOpen && (
-        <ExamModal
-          subjects={subjects}
-          onClose={() => setModalOpen(false)}
-          onSave={(next) => {
-            onSave(next)
-            setModalOpen(false)
-          }}
-        />
+        <ExamModal subjects={subjects} onClose={() => setModalOpen(false)} onSave={(next) => { onSave(next); setModalOpen(false) }} />
       )}
     </section>
   )
@@ -2077,7 +1996,7 @@ function ExamModal({
           className="scrollable"
           style={{ padding: "18px 24px", overflowY: "auto", flex: 1 }}
         >
-          <div
+          <div className="exam-row"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 150px 32px",
@@ -2111,7 +2030,7 @@ function ExamModal({
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {rows.map((r, i) => (
-              <div
+              <div className="exam-row"
                 key={i}
                 style={{
                   display: "grid",
@@ -2390,11 +2309,10 @@ function HowItWorks({
   return (
     <section
       ref={ref}
+      className="content-section tools-section"
       style={{
         padding: "100px 80px",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        animation: visible ? "sectionEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both" : "none",
       }}
     >
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -2511,6 +2429,7 @@ function HowItWorks({
         `}</style>
         <div
           key={active.id}
+          className="feature-card"
           style={{
             position: "relative",
             overflow: "hidden",
@@ -2519,7 +2438,7 @@ function HowItWorks({
             minHeight: 340,
             background: `linear-gradient(150deg, ${BLUE} 0%, #204bc4 55%, ${NAVY} 130%)`,
             border: "1px solid rgba(255,255,255,0.1)",
-            animation: "cardSlideUp 1.1s cubic-bezier(0.22, 1, 0.36, 1)",
+            animation: "cardSlideUp 0.4s cubic-bezier(0.22, 1, 0.36, 1)",
           }}
         >
           {/* Soft orbital arcs in the corner for texture */}
@@ -2795,17 +2714,16 @@ function PastPapersSection({
   return (
     <section
       ref={ref}
+      className="content-section"
       style={{
         padding: "100px 80px",
         background: "rgba(255,255,255,0.015)",
         borderTop: "1px solid rgba(255,255,255,0.05)",
         borderBottom: "1px solid rgba(255,255,255,0.05)",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        animation: visible ? "sectionEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both" : "none",
       }}
     >
-      <div
+      <div className="responsive-grid"
         style={{
           maxWidth: 1280,
           margin: "0 auto",
@@ -2843,10 +2761,10 @@ function PastPapersSection({
           </h2>
           <div style={{ display: "flex", gap: 28 }}>
             {[
-              { num: "87%", label: "Topic coverage" },
-              { num: "4×", label: "Faster planning" },
+              { num: String(topics.length), label: "Topics in view" },
+              { num: `${pct}%`, label: "Review progress" },
             ].map((stat) => (
-              <div key={stat.num}>
+              <div key={stat.label}>
                 <div
                   style={{
                     fontFamily: "var(--font-sans)",
@@ -3038,7 +2956,7 @@ function PastPapersSection({
           </div>
 
           {/* Column headers */}
-          <div
+          <div className="paper-row"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 64px 64px 80px",
@@ -3067,7 +2985,7 @@ function PastPapersSection({
             const isMust = label === "Must Do"
             const isImportant = label === "Important"
             return (
-              <div
+              <div className="paper-row"
                 key={t.name}
                 style={{
                   display: "grid",
@@ -3676,11 +3594,10 @@ function MockExamSection({
   return (
     <section
       ref={ref}
+      className="content-section"
       style={{
         padding: "100px 80px",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        animation: visible ? "sectionEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both" : "none",
       }}
     >
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
@@ -3712,7 +3629,7 @@ function MockExamSection({
           </h2>
         </div>
 
-        <div
+        <div className="responsive-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
@@ -3830,7 +3747,7 @@ function MockExamSection({
               Click the number to edit — this is the pass line you set for yourself, not a mock exam score.
             </p>
 
-            <div
+            <div className="responsive-grid"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -4173,7 +4090,7 @@ function PromptCenter({
           Build the right prompt, every session.
         </h1>
 
-        <div
+        <div className="responsive-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
@@ -4490,10 +4407,10 @@ function SchedulePage({
         </h1>
 
         {/* Column headers */}
-        <div
+        <div className="schedule-row"
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 120px 90px 200px",
+            gridTemplateColumns: "minmax(120px, 1fr) 110px 80px minmax(100px, 180px)",
             gap: 16,
             padding: "0 20px 10px",
           }}
@@ -4522,11 +4439,11 @@ function SchedulePage({
             const pct = s.total ? Math.round((s.completed / s.total) * 100) : 0
             const urgent = daysLeft <= 24
             return (
-              <div
+              <div className="schedule-row"
                 key={s.name}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 120px 90px 200px",
+                  gridTemplateColumns: "minmax(120px, 1fr) 110px 80px minmax(100px, 180px)",
                   gap: 16,
                   alignItems: "center",
                   padding: "18px 20px",
@@ -5119,7 +5036,7 @@ function ExamUploadPage({
           {subject?.name ?? "Your subject"} — Upload Past Papers
         </h1>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginBottom: 16 }}>
+        <div className="responsive-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginBottom: 16 }}>
           {slots.map((files, i) => (
             <ExamSlotCard
               key={i}
@@ -5293,15 +5210,14 @@ function RevisionFlowSection({
   return (
     <section
       ref={ref}
+      className="content-section"
       id="revision-flow"
       style={{
         padding: "100px 80px",
         background: "rgba(255,255,255,0.015)",
         borderTop: "1px solid rgba(255,255,255,0.05)",
         borderBottom: "1px solid rgba(255,255,255,0.05)",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0)" : "translateY(40px)",
-        transition: "opacity 0.7s ease, transform 0.7s ease",
+        animation: visible ? "sectionEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both" : "none",
       }}
     >
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
@@ -6385,64 +6301,7 @@ function TopicEditModal({
 // Fixed background layer of scattered stars + faint constellation figures,
 // spread across the whole page behind all content.
 function StarField() {
-  // scrollTop drives parallax drift; progress (0–1) drives which constellations
-  // are visible. Three star layers drift at different speeds for a depth feel.
-  const [scrollTop, setScrollTop] = useState(0)
-  const [progress, setProgress] = useState(0)
-
-  useEffect(() => {
-    const el = document.getElementById("page-scroll")
-    if (!el) return
-    const onScroll = () => {
-      const max = el.scrollHeight - el.clientHeight
-      setScrollTop(el.scrollTop)
-      setProgress(max > 0 ? el.scrollTop / max : 0)
-    }
-    onScroll()
-    el.addEventListener("scroll", onScroll, { passive: true })
-    return () => el.removeEventListener("scroll", onScroll)
-  }, [])
-
-  // Background=slow (feels far), midground, foreground=fast (feels near).
-  // The container is 300vh tall starting at top=-100vh so the middle third
-  // sits in the viewport at rest. Drifting by up to ~50vh is safe within
-  // the 100vh buffers above/below.
-  const LAYER_SPEED = [0.12, 0.32, 0.62]
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 0,
-        pointerEvents: "none",
-        overflow: "hidden",
-      }}
-    >
-      {/* Scroll-reactive nebula — its position, hue and intensity shift as you
-          scroll, so the whole backdrop visibly transforms top→bottom. */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: `
-          radial-gradient(ellipse 70% 55% at ${50 + progress * 26}% ${-12 + progress * 46}%,
-            hsla(${222 - progress * 40}, 80%, 60%, ${0.16 - progress * 0.05}) 0%, transparent 60%),
-          radial-gradient(ellipse 60% 50% at ${28 - progress * 20}% ${118 - progress * 42}%,
-            hsla(${90 + progress * 20}, 70%, 55%, ${0.04 + progress * 0.07}) 0%, transparent 55%)
-        `,
-          transition: "background 0.2s linear",
-        }}
-      />
-
-      <style>{`
-        @keyframes star-twinkle {
-          0%,100% { opacity: var(--base-o); }
-          50%      { opacity: calc(var(--base-o) * 0.35); }
-        }
-      `}</style>
-    </div>
-  )
+  return <div className="ambient-background" aria-hidden="true" />
 }
 
 // ─── Root ─────────────────────────────────────────────────────
@@ -6451,9 +6310,34 @@ export default function App() {
 const [howTab, setHowTab] = useState(0)
 const overlayRef = useRef<HTMLDivElement>(null)
 
+const returnFocusRef = useRef<HTMLElement | null>(null)
 const goHome = () => setPage("home")
+useEffect(() => {
+  if (page === "home") {
+    returnFocusRef.current?.focus({ preventScroll: true })
+    return
+  }
+  overlayRef.current?.focus({ preventScroll: true })
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") setPage("home")
+    if (event.key === "Tab" && overlayRef.current) {
+      const items = Array.from(overlayRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]')).filter(element => element.getClientRects().length > 0)
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (!first) { event.preventDefault(); return }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === overlayRef.current)) {
+        event.preventDefault(); last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus()
+      }
+    }
+  }
+  document.addEventListener("keydown", onKeyDown)
+  return () => document.removeEventListener("keydown", onKeyDown)
+}, [page])
 
 const navigateTo = (target: 'assistant' | 'board' | 'prompt' | 'schedule' | 'uploadExams') => {
+  if (page === "home") returnFocusRef.current = document.activeElement as HTMLElement
   setPage(target)
   overlayRef.current?.scrollTo({ top: 0 })
 }
@@ -6671,9 +6555,9 @@ const [thinking, setThinking] = useState(false)
   }
 return (
   <div id="page-scroll" className="scrollable" style={{
-    minHeight: "100vh",
+    height: "100dvh",
     background: NAVY,
-    overflowY: "auto",
+    overflowY: page === "home" ? "auto" : "hidden",
     overflowX: "hidden",
     fontFamily: "var(--font-body)",
     color: WHITE,
@@ -6691,14 +6575,17 @@ return (
       }}
     />
 
-    <div style={{ position: "relative", zIndex: 1 }}>
+    <div className="home-content" inert={page !== "home"} style={{ position: "relative", zIndex: 1 }}>
       <Nav
         subjects={subjects}
         active={activeSubject}
         onSelect={setActiveSubject}
+        onNavigate={navigateTo}
       />
 
       <Hero
+        onStart={() => navigateTo("uploadExams")}
+        onOpenBoard={() => navigateTo("board")}
         subjects={subjects}
         onSave={saveSeeds}
         onToggleArchive={(name) => {
@@ -6771,7 +6658,12 @@ return (
 
     <div
       ref={overlayRef}
-      className="scrollable"
+      className="scrollable page-overlay"
+      role={page === "home" ? undefined : "dialog"}
+      aria-modal={page === "home" ? undefined : true}
+      aria-label={page === "home" ? undefined : page}
+      tabIndex={-1}
+      key={page}
       style={{
         position: "fixed",
         inset: 0,
